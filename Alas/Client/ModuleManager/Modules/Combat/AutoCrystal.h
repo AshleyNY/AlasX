@@ -1,112 +1,186 @@
 #pragma once
 #include "../Module.h"
-#include "../../ModuleManager.h"
+#include <algorithm>
+#include <numbers>  // For std::numbers::pi_v
+#include <cmath>
+#include <vector>
 
-struct CrystalFade {
-	Vec3<float> lastPos;
-	float fadeTimer;
-	float fadeDuration;
-};
-
-struct CrystalUtil {
+class CrystalStruct {
 public:
-	Actor* targetEntity;
-	float targetDamage;
-	float localDamage;
+    float TgDameTake;
+    float LpDameTake;
+    Actor* targetActor;
+
 protected:
-	float getExplosionDamage(const Vec3<float>& crystalPos, Actor* target);
+
+    float computeExplosionDamage(const Vec3<float>& crystalPos, Actor* target) {
+        constexpr float explosionRadius = 12.f; // 爆炸半径
+        const float distPercent = computeDistancePercentage(crystalPos, target, explosionRadius);
+        if (distPercent > 1.0f) {
+            return 0.0f; // 超出爆炸范围
+        }
+
+        const float impact = computeImpact(crystalPos, target, distPercent);
+        float damage = calculateBaseDamage(impact, explosionRadius);
+
+        const auto [armorPoints, epf] = getArmorDetails(target);
+        damage = applyArmorReduction(damage, armorPoints, epf);
+
+        return std::max(0.0f, damage); // 确保伤害大于零
+    }
+
+private:
+    // 计算目标与水晶的距离百分比
+    float computeDistancePercentage(const Vec3<float>& crystalPos, Actor* target, float explosionRadius) {
+        const Vec3<float> predictedPos = target->getHumanPos().add(target->stateVectorComponent->velocity);
+        return std::clamp(predictedPos.distanceTo(crystalPos) / explosionRadius, 0.0f, 1.0f);
+    }
+
+    // 计算目标受到的影响
+    float computeImpact(const Vec3<float>& crystalPos, Actor* target, float distPercent) {
+        return (1.0f - distPercent) * mc.getLocalPlayer()->dimension->blockSource->getSeenPercent(crystalPos, *target->getAABB());
+    }
+
+    // 计算基础伤害
+    float calculateBaseDamage(float impact, float explosionRadius) {
+        return ((impact * impact * 3.5f + impact * 0.5f * 7.0f) * explosionRadius + 1.0f);
+    }
+
+    // 获取目标的护甲细节
+    std::pair<int, float> getArmorDetails(Actor* target) {
+        int armorPoints = 0;
+        float epf = 0.0f;
+
+        for (int i = 0; i < 4; i++) {
+            auto* armor = target->getArmor(i);
+            if (armor->isValid()) {
+                armorPoints += armor->getItemPtr()->getArmorValue();
+                epf += 5.0f;
+            }
+        }
+
+        return { armorPoints, epf };
+    }
+
+    // 应用护甲减伤
+    float applyArmorReduction(float damage, int armorPoints, float epf) {
+        constexpr float armorReductionFactor = 0.035f;
+        constexpr float maxEpf = 25.0f;
+        constexpr float epfFactor = 0.75f;
+        constexpr float maxEpfCap = 20.0f;
+
+        damage -= damage * armorPoints * armorReductionFactor;
+        damage -= damage * std::min(ceilf(std::min(epf, maxEpf) * epfFactor), maxEpfCap) * armorReductionFactor;
+
+        return damage;
+    }
+    float getExplosionDamage(const Vec3<float>& crystalPos, Actor* target);
 };
 
-class PlaceUtils : public CrystalUtil {
+
+// 水晶放置结构体
+class CrystalPlacement : public CrystalStruct {
 public:
-	Vec3<int> placePos;
-	PlaceUtils(Vec3<int> pos, Actor* _target) {
-		LocalPlayer* lp = mc.getLocalPlayer();
-		placePos = pos;
-		Vec3<float> crystalPos = pos.toFloat().add(0.5f, 1.f, 0.5f);
-		targetDamage = getExplosionDamage(crystalPos, _target);
-		localDamage = getExplosionDamage(crystalPos, lp);
-		targetEntity = _target;
-	}
+    Vec3<int> placePos;
+    CrystalPlacement(Vec3<int> blockPos, Actor* target) {
+        auto* lp = mc.getLocalPlayer();
+        placePos = blockPos;
+        auto crystalPos = blockPos.toFloat().add(0.5f, 1.f, 0.5f);
+        TgDameTake = computeExplosionDamage(crystalPos, target);
+        LpDameTake = computeExplosionDamage(crystalPos, lp);
+        targetActor = target;
+    }
 };
 
-class BreakUtils : public CrystalUtil {
+// 水晶破坏者结构体
+class CrystalBreaker : public CrystalStruct {
 public:
-	Actor* endCrystal;
-	BreakUtils(Actor* crystal, Actor* _target) {
-		LocalPlayer* lp = mc.getLocalPlayer();
-		endCrystal = crystal;
-		Vec3<float> crystalPos = *crystal->getPosition();
-		targetDamage = getExplosionDamage(crystalPos, _target);
-		localDamage = getExplosionDamage(crystalPos, lp);
-		targetEntity = _target;
-	}
+    Actor* crystalActor;
+    CrystalBreaker(Actor* endCrystalActor, Actor* target) {
+        auto* lp = mc.getLocalPlayer();
+        crystalActor = endCrystalActor;
+        auto crystalPos = *endCrystalActor->getPosition();
+        TgDameTake = computeExplosionDamage(crystalPos, target);
+        LpDameTake = computeExplosionDamage(crystalPos, lp);
+        targetActor = target;
+    }
 };
+
 class AutoCrystal : public Module {
+private:
+
+
+
+    std::string names;
+    std::vector<Actor*> formodnames;
+    std::vector<CrystalPlacement> placeList;
+    std::vector<CrystalBreaker> breakList;
+    std::vector<Actor*> entityList;
+    std::vector<Actor*> targetList;
+    int highestID = -1;
+    bool shouldChangeID = false;
+    bool Mob = false;
+    bool placerot = false;
+    bool breakrot = false;
+    bool placing = false;
+    bool breaking = false;
+    Vec2<float> rotAnglePlace{};
+    Vec2<float> rotAngleBreak{};
+    std::mutex breakListMutex;
+    std::mutex placeListMutex;
+    int Ticks = 20;
+
 public:
-	std::vector<PlaceUtils> placeList;
-	std::vector<BreakUtils> breakList;
-	std::vector<Actor*> targetList;
-	std::vector<Actor*> entityList;
-	std::vector<CrystalFade> fadeList;
+    float targetRange = 12.f;
+    bool autoPlace = true;
+    float placeRange = 7.f;
+    float crystalRange = 3.f;
+    float minPlaceDame = 4.5f;
+    float maxPlaceDame = 6.f;
+    int multiPlace = 1;
+    int placeDelay = 1;
+
+    bool autoBreak = true;
+    float breakRange = 6.f;
+    float minBreakDame = 4.5f;
+    float maxBreakDame = 6.f;
+    int breakDelay = 2;
+    bool idPredict = false;
+    int packets = 1;
+    int sendDelay = 1;
+
+
+    bool extrapolation = true;
+    float extrapolateAmount = 0.5f;
+private:
+    int placeDelayTick = 0;
+    int breakDelayTick = 0;
+    int sendDelayTick = 0;
+
+protected:
+    static bool sortEntityByDist(Actor* a1, Actor* a2);
+    static bool sortCrystalByTargetDame(CrystalStruct a1, CrystalStruct a2);
+    bool isHoldingCrystal();
+    bool isPlaceValid(const Vec3<int>& placePos, Actor* target);
+    void generatePlacements(Actor* target);
+    void getCrystalActorList(Actor* target);
+    void placeCrystal();
+    void breakCrystal();
+    void cleardalist();
+    void breakIdPredictCrystal();
+
 public:
-	bool placeCrystal = true;
-	bool explodeCrystal = true;
-	bool idPredict = false;
-	bool eatCheck = true;
-	bool antiWeakness = false;
-	bool extrapolation = true;
-	bool swing = true;
-	bool rotate = false;
-	bool setDead = false;
-	int placeAmount = 1;
-	float targetRange = 12.f;
-	float maxY = 5.f;
-	float placeRange = 6.f;
-	float breakRange = 6.f;
-	float placeProximity = 12.f;
-	int protocol = 0;
-	int switchType = 3;
-	float localDamagePlace = 20.f;
-	float enemyDamagePlace = 4.f;
-	float localDamageBreak = 20.f;
-	float enemyDamageBreak = 4.f;
-	float extrapolateAmount = 0.5f;
-	float fadeDur = 1.f;
-	int breakType = 0;
-	int placeDelay = 0;
-	int explodeDelay = 0;
-	int boostDelay = 0;
-	int IplaceDelay = 0;
-	int IexplodeDelay = 0;
-	int IboostDelay = 0;
-	int highestId = -1;
-	bool shouldChange = false;
-	int idPacket = 1;
-	bool renderDamage = true;
-	bool render = true;
-	bool render2d = false;
-	int alpha = 50;
-	int lineAlpha = 70;
-	bool fade = false;
-	bool test = false;
-public:
-	int getEndCrystal();
-	int getBestItem();
-	static bool sortCrystal(CrystalUtil a1, CrystalUtil a2);
-	bool isPlaceValid(const Vec3<int>& placePos, Actor* target);
-	void generatePlacements(Actor* target);
-	void getCrystalList(Actor* target);
-	void placeEndCrystal(GameMode* gm);
-	void explodeEndCrystal(GameMode* gm);
-	void predictEndCrystal(GameMode* gm);
-public:
-	AutoCrystal();
-	virtual std::string getModName() override;
-	virtual void onNormalTick(Actor* randomActorIDFK) override;
-	virtual void onSendPacket(Packet* packet, bool& shouldCancel) override;
-	virtual void onRender(MinecraftUIRenderContext* renderCtx);
-	virtual void onImGuiRender(ImDrawList* d) override;
-	virtual void onEnable();
-	virtual void onDisable();
+    Actor* currenttarget = nullptr;
+    int prevCrystalsAmount = 1;
+    int crystalSpeed = 1;
+    int invTimer = 1;
+    bool Crystalcounter = false;
+    AutoCrystal();
+    virtual void onRender(MinecraftUIRenderContext* renderCtx);
+    virtual std::string getModName() override;
+    virtual void onEnable() override;
+    virtual void onDisable() override;
+    virtual void onNormalTick(Actor* actor) override;
+    virtual void onSendPacket(Packet* packet, bool& shouldCancel) override;
+    virtual void onImGuiRender(ImDrawList* d) override;
 };

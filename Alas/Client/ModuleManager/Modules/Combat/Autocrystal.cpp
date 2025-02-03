@@ -1,326 +1,412 @@
 #include "AutoCrystal.h"
+#include "../Player/PacketMine.h"
 #include "../../../Client.h"
-#include "../../../Client.h"
-#include "../../../../Utils/DamageUtils.h"
-#include "../../../../Utils/BlockUtils.h"
-#include "../../../../Utils/EffectUtils.h"
-AutoCrystal::AutoCrystal() : Module("AutoCrystal", "Places and breaks crystals automatically.", Category::COMBAT) {
-	// Place
-	addBoolCheck("Place", "Place end crystals at the best position", &placeCrystal);
-	addSlider<int>("Place Delay", "Delay in ticks between each placement", ValueType::INT_T, &placeDelay, 0, 20);
-	addSlider<int>("Place Amount", "Amount of crystals we place everytime", ValueType::INT_T, &placeAmount, 1,5);
-	addSlider<float>("Place Range", "If a placement's distance is greater than this then we will look for another placement in the placelist", ValueType::FLOAT_T, &placeRange, 1.f, 20.f);
-	addSlider<float>("Proximity", "Maximum distance of a placement from the target before switching to another position, its like place range but for target", ValueType::FLOAT_T, &placeProximity, 1.f, 12.f);
-	addSlider<float>("Max Y", "like proximity but for y level", ValueType::FLOAT_T, &maxY, 1.f, 12.f);
-	addSlider<float>("Local Place Damage", "If a placement's damage will this more than this to you then we will use another placement", ValueType::FLOAT_T, &localDamagePlace, 1.f, 36.f);
-	addSlider<float>("Enemy Place Damage", "If a placement's damage to the target will deal less than this then we use another placement", ValueType::FLOAT_T, &enemyDamagePlace, 1.f, 20.f);
-	// Explode
-	addBoolCheck("Explode", "Explode end crystals that deal the most damage", &explodeCrystal);
-	addEnumSetting("Explode Type", "How we explode end crystal", { "Smart", "All" }, &breakType);
-	addSlider<int>("Explode Delay", "Delay in ticks between each attack", ValueType::INT_T, &explodeDelay, 0, 20);
-	addSlider<float>("Explode Range", "If a crystal's distance is greater than this then we will look for another end crystal in the terrain", ValueType::FLOAT_T, &breakRange, 1.f, 20.f);
-	addSlider<float>("Local Break Damage", "If a crystal's damage will this more than this to you then we will use another crystal", ValueType::FLOAT_T, &localDamageBreak, 1.f, 36.f);
-	addSlider<float>("Enemy Break Damage", "If a crystal's damage to the target will deal less than this then we use another crystal", ValueType::FLOAT_T, &enemyDamageBreak, 1.f, 20.f);
-	addBoolCheck("Anti-Weakness", "When have weakness we switch to slot that deals most dmg", &antiWeakness);
-	// Logic
-	addEnumSetting("Protocol", "Logic for the ca to use, use the Java protocol for servers like endzone", { "Vanilla", "Java" }, &protocol);
-	addSlider<float>("Target Range", "If a players distance is greater than this then we wont consider them a potential target", ValueType::FLOAT_T, &targetRange, 1.f, 20.f);
-	addBoolCheck("Eat Check", "Stops the hack when eating", &eatCheck);
-	addBoolCheck("Rotate", "Rotate to where ur placing", &rotate);
-	addBoolCheck("Swing", "Swings your arm", &swing);
-	addEnumSetting("Switch", "How we switch to end crystal", { "None", "Regular", "Spoof", "Packet" }, &switchType);
-	addBoolCheck("Self", "Targets self for test", &test);
-	// IDPredict
-	addBoolCheck("Predict", "Predicts the next end crystal runtime id to attack it before it even spawns thus attacking it faster than normally possible", &idPredict);
-	addSlider<int>("Predict Delay", "Delay in ticks between each predict", ValueType::INT_T, &boostDelay, 0, 20);
-	addSlider<int>("Predict Packets", "Amount of packets we will send, the more the faster", ValueType::INT_T, &idPacket, 1, 10);
-	addBoolCheck("Set Dead", "Sets end crystal as dead, this will make crystalaura slightly faster. be sure that your crystal will infact die when this is on, some anticheats can prevent this thus making u ghost crystal", &setDead);
+#include <algorithm>
+#include <vector>
+#include <ranges>
+#include <mutex>
+#include <omp.h>
+#include "../../../../Utils/Player/DamageUtils.h"
+#include "../../../../Utils/Player/BlockUtils.h"
+
+bool Damagerender = false;
+AutoCrystal::AutoCrystal() : Module("AutoCrystal", "NULL", Category::COMBAT, 0x0) {
+	addSlider<float>("Target Range", "NULL", ValueType::FLOAT_T, &targetRange, 5.f, 20.f);
+
+	addBoolCheck("Auto Place", "NULL", &autoPlace);
+	addSlider<float>("Place Range", "NULL", ValueType::FLOAT_T, &placeRange, 3.f, 10.f);
+	addSlider<float>("Max Place Damage", "NULL", ValueType::FLOAT_T, &maxPlaceDame, 1.f, 20.f);
+	addSlider<float>("Min Place Damage", "NULL", ValueType::FLOAT_T, &minPlaceDame, 1.f, 20.f);
+	addSlider<int>("Multi Place", "NULL", ValueType::INT_T, &multiPlace, 1, 5);
+	addSlider<int>("Place Delay", "NULL", ValueType::INT_T, &placeDelay, 0, 20);
+
+	addBoolCheck("Auto Break", "NULL", &autoBreak);
+	addSlider<float>("Break Range", "NULL", ValueType::FLOAT_T, &breakRange, 3.f, 10.f);
+	addSlider<float>("Max Break Damage", "NULL", ValueType::FLOAT_T, &maxBreakDame, 1.f, 20.f);
+	addSlider<float>("Min Break Damage", "NULL", ValueType::FLOAT_T, &minBreakDame, 1.f, 20.f);
+	addSlider<int>("Break Delay", "NULL", ValueType::INT_T, &breakDelay, 0, 20);
+	addBoolCheck("ID Predict", "NULL", &idPredict);
 	// Extrapolation
-	addBoolCheck("Extrapolation", "Gets their velocity(if the server sends it) and predicts their next pos and places near there", &extrapolation);
-	addSlider<float>("Intensity", "Amount of velocity you wanna multiply and predict idk", ValueType::FLOAT_T, &extrapolateAmount, 0.f, 20.f);
-	// Render
-	addBoolCheck("Render", "Render placement", &render);
-	addBoolCheck("Render 2D", "Make that shit FLAT", &render2d);
-	addBoolCheck("Render Damage", "Renders the amount of damage we are dealing", &renderDamage);
-	addBoolCheck("Fade", "Cool fade renders from Gamesense Tech", &fade);
-	addSlider<float>("Fade Duration", "Duration of fading in seconds", ValueType::FLOAT_T, &fadeDur, 0.f, 3.f);
-	addSlider<int>("Alpha", "Opacity", ValueType::INT_T, &alpha, 0, 255);
-	addSlider<int>("Line Alpha", "Opacity", ValueType::INT_T, &lineAlpha, 0, 255);
-}
+	addBoolCheck("Extrapolation", "Gets their velocity(if the server sends it) and predicts their next pos and places near there", &extrapolation, 4);
+	addSlider<float>("Intensity", "Amount of velocity you wanna multiply and predict idk", ValueType::FLOAT_T, &extrapolateAmount, 0.f, 20.f, 4);
 
+
+	addSlider<int>("Packets", "NULL", ValueType::INT_T, &packets, 1, 30);
+	addSlider<int>("Ticks", "NULL", ValueType::INT_T, &Ticks, 0, 100);
+	addSlider<int>("Send Delay", "NULL", ValueType::INT_T, &sendDelay, 0, 20);
+	addBoolCheck("Count crystal", "Crystal speed", &Crystalcounter);
+	addBoolCheck("Render Damages", "NULL", &Damagerender);
+	addBoolCheck("Testing", "For testing", &Mob);
+
+}
 std::string AutoCrystal::getModName() {
-	return protocol == 0 ? "Vanilla" : "Java";
+
+	return names;
+
 }
 
-void AutoCrystal::onEnable() {
+bool AutoCrystal::sortCrystalByTargetDame(CrystalStruct a1, CrystalStruct a2) {
+	return a1.TgDameTake > a2.TgDameTake;
+}
+
+bool AutoCrystal::sortEntityByDist(Actor* a1, Actor* a2) {
+	auto localPlayerPos = mc.getLocalPlayer()->stateVectorComponent->pos;
+	return (a1->stateVectorComponent->pos.dist(localPlayerPos) < a2->stateVectorComponent->pos.dist(localPlayerPos));
+}
+
+bool AutoCrystal::isHoldingCrystal() {
+	auto* plrInv = mc.getLocalPlayer()->getPlayerInventory();
+	auto* inv = plrInv->inventory;
+	auto slot = plrInv->selectedSlot;
+	auto* itemStack = inv->getItemStack(slot);
+	return (itemStack->isValid()) ? itemStack->getItemPtr()->getitemId() == 720 : false;
+}
+void AutoCrystal::cleardalist() {
+	entityList.clear();
+	targetList.clear();
 	placeList.clear();
 	breakList.clear();
-	targetList.clear();
-	entityList.clear();
+}
+int dam;
+void AutoCrystal::onEnable() {
+	cleardalist();
+	placerot = false;
+	breakrot = false;
+	placing = false;
+	breaking = false;
 }
 
 void AutoCrystal::onDisable() {
-	placeList.clear();
-	breakList.clear();
-	targetList.clear();
-	entityList.clear();
+	cleardalist();
+	placerot = false;
+	breakrot = false;
+	placing = false;
+	breaking = false;
 }
 
-float CrystalUtil::getExplosionDamage(const Vec3<float>& crystalPos, Actor* target) {
+
+float CrystalStruct::getExplosionDamage(const Vec3<float>& crystalPos, Actor* target) {
 	AutoCrystal* autoCrystal = (AutoCrystal*)client->moduleMgr->getModule("AutoCrystal");
 	return DamageUtils::getExplosionDamage(crystalPos, target, autoCrystal->extrapolation ? autoCrystal->extrapolateAmount : 0.f, 0);
 }
 
 bool AutoCrystal::isPlaceValid(const Vec3<int>& placePos, Actor* target) {
-	Vec3<float> intersectPos = Vec3<float>(placePos.x, placePos.y, placePos.z); intersectPos.y += 1;
+	Vec3<float> intersectPos = Vec3<float>(placePos.x, placePos.y, placePos.z);
+	intersectPos.y += 1;
+
 	if (!(BlockUtils::getBlockId(placePos) == 49 || BlockUtils::getBlockId(placePos) == 7)) return false;
-	if (mc.getLocalPlayer()->dimension->blockSource->getBlock(Vec3<int>(placePos.x, placePos.y + 1, placePos.z))->blockLegacy->blockName != "air") return false;
-	if (protocol == 0 && mc.getLocalPlayer()->dimension->blockSource->getBlock(Vec3<int>(placePos.x, placePos.y + 2, placePos.z))->blockLegacy->blockName != "air") return false;
-	if (mc.getLocalPlayer()->getHumanPos().dist(placePos) > placeRange) return false;
-	if (target->getAABB()->intersects(AABB(intersectPos, intersectPos.add(1.f).add(0.f, protocol == 1 ? 0.5f : 0.f, 0.f)))) return false;
+	if (mc.player()->dimension->blockSource->getBlock(Vec3<int>(placePos.x, placePos.y + 1, placePos.z))->blockLegacy->blockName != "air") return false;
+
+	if (mc.player()->getHumanPos().dist(placePos) > placeRange) return false;
+	if (target->getAABB()->intersects(AABB(intersectPos, intersectPos.add(1.f)))) return false;
+
 	for (Actor* currentEnt : entityList) {
 		if (currentEnt->getEntityTypeId() == 71) continue;
 		AABB targetAABB = *currentEnt->getAABB();
-		if (currentEnt->getEntityTypeId() == 319) {
-			if (protocol == 0) { // Nukkit hitbox are way fatter than java so
-				targetAABB.lower = targetAABB.lower.sub(Vec3<float>(0.1f, 0.f, 0.1f));
-				targetAABB.upper = targetAABB.upper.add(0.1f, 0.f, 0.1f);
-			}
-		} if (targetAABB.intersects(AABB(intersectPos, intersectPos.add(1.f).add(0.f, protocol == 1 ? 0.5f : 0.f, 0.f)))) return false;
+		if (targetAABB.intersects(AABB(intersectPos, intersectPos.add(1.f)))) return false;
 	}
+
 	return true;
 }
 
-int AutoCrystal::getEndCrystal() {
-	PlayerInventory* plrInv = mc.getLocalPlayer()->getPlayerInventory();
-	Inventory* inv = plrInv->inventory;
-	for (int i = 0; i < 9; i++) {
-		ItemStack* itemStack = inv->getItemStack(i);
-		if (itemStack->isValid() && itemStack->getItemPtr()->gettexture_name() == "end_crystal") return i;
-	}
-	return plrInv->selectedSlot;
-}
-
-int AutoCrystal::getBestItem() {
-	PlayerInventory* plrInv = mc.getLocalPlayer()->getPlayerInventory();
-	Inventory* inv = plrInv->inventory;
-	float damage = 0.f;
-	int slot = plrInv->selectedSlot;
-	for (int i = 0; i < 9; i++) {
-		ItemStack* itemStack = inv->getItemStack(i);
-		if (itemStack->isValid()) {
-			float currentDamage = itemStack->getItemPtr()->getAttackDamage() + (1.25f * itemStack->getEnchantLevel(EnchantID::sharpness));
-			if (currentDamage > damage) {
-				damage = currentDamage;
-				slot = i;
-			}
-		}
-	}
-	return slot;
-}
-
-bool AutoCrystal::sortCrystal(CrystalUtil a1, CrystalUtil a2) {
-	return a1.targetDamage > a2.targetDamage;
-}
-
 void AutoCrystal::generatePlacements(Actor* target) {
-	const int radius = (int)placeProximity;
+	const int radius = (int)multiPlace;
 	for (auto x = -radius; x <= radius; x++) {
-		for (auto y = -maxY; y <= 3; y++) {
+		for (auto y = -targetRange; y <= 3; y++) {
 			for (auto z = -radius; z <= radius; z++) {
 				Vec3<float> targetPos = target->getHumanPos();
 				Vec3<int> blockPos = Vec3<int>(static_cast<int>(targetPos.x + (target->stateVectorComponent->velocity.x * extrapolateAmount)) + x,
 					static_cast<int>(targetPos.y + (target->stateVectorComponent->velocity.y * extrapolateAmount)) + y,
 					static_cast<int>(targetPos.z + (target->stateVectorComponent->velocity.z * extrapolateAmount)) + z); // Extra po lat ion
 				if (isPlaceValid(blockPos, target)) {
-					PlaceUtils placement(blockPos, target);
-					if (placement.localDamage < localDamagePlace && placement.targetDamage >= enemyDamagePlace) placeList.push_back(placement);
+					CrystalPlacement placement(blockPos, target);
+					if (placement.LpDameTake < maxPlaceDame && placement.TgDameTake >= minPlaceDame) placeList.push_back(placement);
 				}
 			}
 		}
 	}
-	std::sort(placeList.begin(), placeList.end(), AutoCrystal::sortCrystal);
+	std::sort(placeList.begin(), placeList.end(), AutoCrystal::sortCrystalByTargetDame);
 }
 
-void AutoCrystal::getCrystalList(Actor* target) {
-	for (Actor* entity : entityList) {
-		if (entity->getEntityTypeId() != 71) continue;
-		if (entity->stateVectorComponent->pos.dist(mc.getLocalPlayer()->stateVectorComponent->pos) > breakRange) continue;
-		BreakUtils crystalBreak(entity, target);
-			breakList.push_back(crystalBreak);
-			if (idPredict) highestId = entity->getRuntimeID();
+void AutoCrystal::getCrystalActorList(Actor* target) {
+	auto* localPlayer = mc.getLocalPlayer();
+	std::vector<CrystalBreaker> localBreakList;
+
+	for (auto* ent : entityList) {
+		if (ent->getEntityTypeId() != 71 || ent->stateVectorComponent->pos.dist(localPlayer->stateVectorComponent->pos) > breakRange)
+			continue;
+
+		CrystalBreaker cBreaker(ent, target);
+		if (cBreaker.LpDameTake < maxBreakDame && cBreaker.TgDameTake >= minBreakDame)
+			localBreakList.push_back(cBreaker);
 	}
-	std::sort(breakList.begin(), breakList.end(), sortCrystal);
-}
 
-void AutoCrystal::placeEndCrystal(GameMode* gm) {
-	if (placeList.empty()) return;
-	int maxPlace = 0;
-	if (mc.getLocalPlayer()->getPlayerInventory()->selectedSlot != getEndCrystal() && switchType != 3) return;
-	if (IplaceDelay >= placeDelay) {
-		for (PlaceUtils& place : placeList) {
-			if (swing) mc.getLocalPlayer()->swing();
-			mc.getLocalPlayer()->getLevel()->setHitResult(HitResultType::AIR);
-			gm->buildBlock(place.placePos, Math::random(0, 5), false);
-			mc.getLocalPlayer()->getLevel()->setHitResult(HitResultType::AIR);
-			maxPlace++;
-			if (maxPlace >= placeAmount) break;
-		}
-		IplaceDelay = 0;
+	{
+		std::lock_guard<std::mutex> lock(breakListMutex);
+		breakList.insert(breakList.end(), localBreakList.begin(), localBreakList.end());
+		std::sort(breakList.begin(), breakList.end(), AutoCrystal::sortCrystalByTargetDame);
 	}
-	else IplaceDelay++;
 }
 
-void AutoCrystal::explodeEndCrystal(GameMode* gm) {
-	if (breakList.empty()) return;
-	PlayerInventory* plrInv = mc.getLocalPlayer()->getPlayerInventory();
-	Inventory* inv = plrInv->inventory;
-	if (IexplodeDelay >= explodeDelay) {
-		if (antiWeakness) {
-			if (((DamageUtils::getPlayerAttackDamage() <= 0) || (EffectUtils::hasEffect(EFFECTID::WEAKNESS) && !EffectUtils::hasEffect(EFFECTID::STRENGTH)))) {
-				plrInv->selectedSlot = getBestItem();
-				MobEquipmentPacket pk(mc.getLocalPlayer()->getRuntimeID(), mc.getLocalPlayer()->getPlayerInventory()->inventory->getItemStack(getBestItem()), getBestItem(), getBestItem());
-				mc.getLocalPlayer()->sendNetworkPacket(pk);
-				mc.getClientInstance()->loopbackPacketSender->sendToServer(&pk);
-			}
+void AutoCrystal::placeCrystal() {
+	std::lock_guard<std::mutex> lock(placeListMutex);
+
+	if (placeList.empty() || !isHoldingCrystal())
+		return;
+
+	auto* gm = mc.getGameMode();
+
+	if (placeDelayTick >= placeDelay) {
+		for (CrystalPlacement& placement : placeList) {
+			auto rotationToPlacement = mc.getLocalPlayer()->stateVectorComponent->pos.CalcAngle(placement.placePos.toFloat());
+			rotAnglePlace = rotationToPlacement;
+			placerot = true;
+			mc.getLocalPlayer()->swing();
+			//InteractPacket inter(InteractAction::LEFT_CLICK, mc.getLocalPlayer()->getRuntimeID(), placement.placePos.toFloat());
+			gm->buildBlock(placement.placePos, Math::random(0, 5), false);
+			//mc.getClientInstance()->loopbackPacketSender->sendToServer(&inter);
+			dam = placement.TgDameTake;
+
+			break; // Exit loop after placing a crystal
 		}
-		if (idPredict) highestId = breakList[0].endCrystal->getRuntimeID();
-		if (breakType == 1) {
-			for (Actor* crystal : mc.getLocalPlayer()->getLevel()->getRuntimeActorList()) {
-				if (crystal == nullptr) continue;
-				if (crystal->getEntityTypeId() != 71) continue;
-				if (crystal->getEyePos().dist(mc.getLocalPlayer()->getEyePos()) > breakRange) continue;
-				gm->attack(crystal);
-				break;
-			}
-		}
-		gm->attack(breakList[0].endCrystal);
-		if (setDead) {
-			breakList[0].endCrystal->kill();
-			breakList[0].endCrystal->despawn(); // CLIENT SIDED FAST!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-			gm->attack(breakList[0].endCrystal);
-		}
-		IexplodeDelay = 0;
+
+		placeDelayTick = 0;
 	}
-	else IexplodeDelay++;
+	else {
+		rotAnglePlace = {};
+
+		placeDelayTick++;
+	}
+}
+void attack(Actor* target) {
+	auto lp = mc.getLocalPlayer();
+	if (!mc.getGameMode()->attack(target))  // this returns a bool if it successfully attacks iirc
+		return;
+	lp->swing();
+	//	Game.cpsLeft.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count());
+}
+void AutoCrystal::breakCrystal() {
+	std::lock_guard<std::mutex> lock(breakListMutex);
+
+	if (!autoBreak || breakList.empty())
+		return;
+
+	auto* gm = mc.getGameMode();
+
+	if (breakDelayTick >= breakDelay) {
+		highestID = breakList[0].crystalActor->getRuntimeID();
+
+
+
+		attack(breakList[0].crystalActor);
+
+		breakDelayTick = 0;
+	}
+	else {
+		rotAngleBreak = {};
+
+		breakDelayTick++;
+	}
 }
 
-void AutoCrystal::predictEndCrystal(GameMode* gm) {
-	if (placeList.empty()) return;
-	int realPacket = idPacket * 5;
-	if (IboostDelay >= boostDelay) {
-		shouldChange = true;
-		for (int i = 0; i < realPacket; i++) {
-			InteractPacket inter(InteractAction::LEFT_CLICK, placeList[0].targetEntity->getRuntimeID(), placeList[0].targetEntity->stateVectorComponent->pos.sub(Vec3<int>(0.f, 0.2f, 0.f)));
-			if (!breakList.empty()) gm->attack(breakList[0].endCrystal);
+void AutoCrystal::breakIdPredictCrystal() {
+	std::lock_guard<std::mutex> lock(breakListMutex);
+
+	if (!autoBreak || placeList.empty())
+		return;
+
+	auto* gm = mc.getGameMode();
+
+	if (sendDelayTick >= sendDelay) {
+		shouldChangeID = true;
+
+		for (auto i = 0; i < packets; i++) {
+			InteractPacket inter(InteractAction::LEFT_CLICK, placeList[0].targetActor->getRuntimeID(), placeList[0].targetActor->stateVectorComponent->pos.sub(Vec3<int>(0.f, 0.2f, 0.f)));
+			//gm->attack(placeList[0].targetActor);
+			attack(placeList[0].targetActor);
 			mc.getClientInstance()->loopbackPacketSender->sendToServer(&inter);
-			highestId++;
+			highestID++;
 		}
-		highestId -= realPacket;
-		shouldChange = false;
-		IboostDelay = 0;
+
+		highestID -= packets;
+		shouldChangeID = false;
+		sendDelayTick = 0;
 	}
-	else IboostDelay++;
+	else {
+		sendDelayTick++;
+	}
 }
-void AutoCrystal::onNormalTick(Actor* randomActorIDFK) {
-	GameMode* gm = mc.getGameMode();
-	PlayerInventory* plrInv = mc.getLocalPlayer()->getPlayerInventory();
-	Inventory* inv = plrInv->inventory;
-	placeList.clear();
-	breakList.clear();
-	targetList.clear();
-	entityList.clear();
-	int oldSlot = plrInv->selectedSlot;
-	if (eatCheck && mc.getLocalPlayer()->getItemUseDuration() > 0) return;
-	if (mc.getLocalPlayer()->getLevel()->getRuntimeActorList().empty()) return;
-	for (Actor* target : mc.getLocalPlayer()->getLevel()->getRuntimeActorList()) {
-		if (target == nullptr) continue;
+
+
+int getCrystal() {
+	auto* plrInv = mc.getLocalPlayer()->getPlayerInventory();
+	auto* inv = plrInv->inventory;
+
+	for (auto i = 0; i < 9; i++) {
+		auto* itemStack = inv->getItemStack(i);
+
+		if (itemStack->isValid() && itemStack->getItemPtr()->gettexture_name() == "end_crystal") {
+			return i;
+		}
+	}
+	return plrInv->selectedSlot;
+}
+#include <string> // for string and to_string()
+void AutoCrystal::onNormalTick(Actor* actor) {
+	cleardalist();
+	auto* localPlayer = mc.getLocalPlayer();
+	auto* level = localPlayer->getLevel();
+	static PacketMine* blockReachMod = (PacketMine*)client->moduleMgr->getModule("PacketMine");
+
+	if (!level || !localPlayer->dimension->blockSource) return;
+
+	auto* gm = mc.getGameMode();
+	auto* plrInv = localPlayer->getPlayerInventory();
+	auto* inv = plrInv->inventory;
+
+	// Check if PacketMine is actively mining and eating
+	auto* itemStack = localPlayer->getCarriedItem();
+	auto* item = itemStack->getItemPtr();
+	if (item != nullptr && item->isFood()) {
+		if (localPlayer->getItemUseDuration() > 0) return;
+	}
+	if (blockReachMod->getIsMining()) return;
+
+	// Get the initial crystal count
+	int initialCrystalsAmount = inv->getItemStack(getCrystal())->stackCount;
+
+	for (auto* target : level->getRuntimeActorList()) {
 		entityList.push_back(target);
-		if (!TargetUtils::isTargetValid(target)) continue;
-		if (target->getHumanPos().dist(mc.getLocalPlayer()->getHumanPos()) > targetRange) continue;
-		targetList.push_back(target);
-	}
-	if (test) targetList.push_back(mc.getLocalPlayer());
-	if (!targetList.empty()) {
-		for (Actor* target : targetList) {
-			if (placeCrystal) generatePlacements(target);
-			if (explodeCrystal) getCrystalList(target);
-			if (switchType != 0) {
-				if (switchType != 3) plrInv->selectedSlot = getEndCrystal(); // homeless method MOBEQ ON TOP
-				if (switchType != 1) {
-					MobEquipmentPacket pk(mc.getLocalPlayer()->getRuntimeID(), mc.getLocalPlayer()->getPlayerInventory()->inventory->getItemStack(getEndCrystal()), getEndCrystal(), getEndCrystal());
-					mc.getLocalPlayer()->sendNetworkPacket(pk);
-					mc.getClientInstance()->loopbackPacketSender->sendToServer(&pk);
-				}
-			}
-			if (placeCrystal) placeEndCrystal(gm);
-			if (explodeCrystal) explodeEndCrystal(gm);
-			if (idPredict) predictEndCrystal(gm);
-			break;
-		}
-		if (switchType == 2) plrInv->selectedSlot = oldSlot;
-		if (switchType != 1 && switchType != 0) {
-			MobEquipmentPacket pk(mc.getLocalPlayer()->getRuntimeID(), mc.getLocalPlayer()->getPlayerInventory()->inventory->getItemStack(oldSlot), oldSlot, oldSlot);
-			mc.getLocalPlayer()->sendNetworkPacket(pk);
-			mc.getClientInstance()->loopbackPacketSender->sendToServer(&pk);
+		if (TargetUtils::isTargetValid(target, Mob) &&
+			localPlayer->stateVectorComponent->pos.dist(target->stateVectorComponent->pos) < targetRange) {
+			targetList.push_back(target);
 		}
 	}
+
+	if (targetList.empty()) return;
+
+	std::sort(targetList.begin(), targetList.end(), AutoCrystal::sortEntityByDist);
+	float distance = 0;
+	std::string namess;
+	if (autoPlace) generatePlacements(targetList[0]);
+	if (localPlayer->stateVectorComponent->pos.dist(targetList[0]->stateVectorComponent->pos) < targetRange)
+	{
+		distance = localPlayer->stateVectorComponent->pos.dist(targetList[0]->stateVectorComponent->pos);
+
+	}
+	if (targetList.empty())
+	{
+		namess = "";
+	}
+	else if (!targetList.empty())
+	{
+		namess = targetList[0]->getNameTag()->c_str();
+	}
+	else if (localPlayer->stateVectorComponent->pos.dist(targetList[0]->stateVectorComponent->pos) > targetRange)
+	{
+		distance = 0;
+	}
+	currenttarget = targetList[0];
+	names = std::string("[") + namess + std::string(",") + std::string(std::to_string(distance)) + std::string("]");
+	if (autoBreak) getCrystalActorList(targetList[0]);
+
+	auto bestSlot = getCrystal();
+	auto oldSlot = plrInv->selectedSlot;
+	auto shouldSwitch = (bestSlot != plrInv->selectedSlot);
+	if (shouldSwitch) {
+		plrInv->selectedSlot = bestSlot;
+	}
+
+	if (isHoldingCrystal()) {
+		crystalSpeed = dam;
+		prevCrystalsAmount = inv->getItemStack(plrInv->selectedSlot)->stackCount;
+		localPlayer->addExperience(1);
+		placeCrystal();
+		breakCrystal();
+		if (idPredict) breakIdPredictCrystal();
+	}
+	if (shouldSwitch) plrInv->selectedSlot = oldSlot;
 }
 
+
+/*	/*if (packet->getId() == PacketID::PlayerAuthInput || packet->getId() == PacketID::MovePlayerPacket) {
+		auto* authPacket = reinterpret_cast<PlayerAuthInputPacket*>(packet);
+		auto* movePacket = reinterpret_cast<MovePlayerPacket*>(packet);
+		authPacket->ticksAlive = Ticks;
+		movePacket->tick = Ticks;
+		movePacket->actorRuntimeID = mc.getLocalPlayer()->getRuntimeID();
+		authPacket->rotation = rotAnglePlace;
+		movePacket->rotation = rotAnglePlace;
+		authPacket->headYaw = rotAnglePlace.y;
+		movePacket->headYaw = rotAnglePlace.y;
+
+			if (!targetList.empty() && rotMode == 1 && packet->getId() == PacketID::PlayerAuthInput) {
+		PlayerAuthInputPacket* authPacket = (PlayerAuthInputPacket*)packet;
+		authPacket->rotation = rotAngle;
+		authPacket->headYaw = rotAngle.y;
+	}*/
 void AutoCrystal::onSendPacket(Packet* packet, bool& shouldCancel) {
-	if (rotate) {
-		Vec2<float> angle2 = mc.getLocalPlayer()->getPosition()->CalcAngle(*breakList[0].endCrystal->getPosition());
-		if (packet->getId() == PacketID::MovePlayerPacket) {
-			auto* movePkt = (MovePlayerPacket*)packet;
-			movePkt->rotation = angle2;
-			movePkt->headYaw = angle2.y;
+	if (packet->getId() == PacketID::PlayerAuthInput) {
+		auto* authPacket = reinterpret_cast<PlayerAuthInputPacket*>(packet);
+		authPacket->rotation = rotAnglePlace;
+		authPacket->headYaw = rotAnglePlace.y;
+	}
+
+	/*
+	}
+
+	if (!shouldChangeID) return;
+
+	if (packet->getId() == PacketID::InventoryTransaction) {
+		auto* invPacket = reinterpret_cast<InventoryTransactionPacket*>(packet);
+		auto* invComplex = invPacket->transaction.get();
+
+		if (invComplex->type == ComplexInventoryTransaction::Type::ItemUseOnEntityTransaction) {
+			*(int*)((uintptr_t)(invComplex)+0x68) = highestID;
 		}
 	}
-}
-Vec3<float> lerpPos;
-void AutoCrystal::onRender(MinecraftUIRenderContext* renderCtx) {
-	Colors* colorMod = (Colors*)client->moduleMgr->getModule("Colors");
-	int placed = 0;
-	for (auto it = fadeList.begin(); it != fadeList.end(); ) {
-		it->fadeTimer += ImGui::GetIO().DeltaTime;
-		float fadeAlpha = 1.f - (it->fadeTimer / it->fadeDuration);
-		if (fadeAlpha <= 0.0f) it = fadeList.erase(it);
-		else {
-			float alpha2 = (alpha / 255.f) * fadeAlpha;
-			float lalpha2 = (alpha / 255.f) * fadeAlpha;
-			RenderUtils::drawBox(it->lastPos.add(0, render2d ? 1 : 0, 0), UIColor(colorMod->getColor().r, colorMod->getColor().g, colorMod->getColor().b, alpha2 * 255), UIColor(colorMod->getColor().r, colorMod->getColor().g, colorMod->getColor().b, lalpha2 * 255), 0.3f, true, false);
-			it++;
-		}
-	}
-	if (placeList.empty()) return;
-	for (PlaceUtils& placement : placeList) {
-		if (fade && lerpPos != placement.placePos.toFloat()) fadeList.push_back({ lerpPos, 0.f, fadeDur });
-		RenderUtils::drawBox(placement.placePos.toFloat().add(0, render2d ? 1 : 0, 0), UIColor(colorMod->getColor().r, colorMod->getColor().g, colorMod->getColor().b, alpha), UIColor(colorMod->getColor().r, colorMod->getColor().g, colorMod->getColor().b, lineAlpha), 0.3f, true, false);
-		lerpPos = placement.placePos.toFloat();
-		placed++;
-		if (placed >= placeAmount) break;
-	}
+	else if (packet->getId() == PacketID::LevelSoundEvent) {
+		shouldCancel = true;
+	}*/
 }
 
-void AutoCrystal::onImGuiRender(ImDrawList* d) {
-	if (mc.getLocalPlayer() == nullptr) return;
-	if (mc.getLocalPlayer()->getLevel() == nullptr) return;
-	if (!mc.getClientInstance()->minecraftGame->canUseKeys) return;
-	if (!renderDamage) return;
+void AutoCrystal::onRender(MinecraftUIRenderContext* renderCtx) {
 	int placed = 0;
-	if (placeList.empty()) return;
-	for (PlaceUtils& placement : placeList) {
+	for (CrystalPlacement& placement : placeList) {
+		Vec3<float> drawboxCenter = placement.placePos.toFloat().add(0.5f, 1.5f, 0.5f);
+		RenderUtils::drawBox(placement.placePos.toFloat(), UIColor(0, 255, 255, 50), UIColor(0, 255, 255, 255), 0.3f, true, false);
+		placed++;
+
+		if (placed >= multiPlace) break;
+	}
+}
+void AutoCrystal::onImGuiRender(ImDrawList* d) {
+	LocalPlayer* lp = mc.getLocalPlayer();
+	if (lp == nullptr) return;
+	if (lp->getLevel() == nullptr) return;
+	if (!mc.getClientInstance()->minecraftGame->canUseKeys) return;
+	static Colors* colorsMod = (Colors*)client->moduleMgr->getModule("Colors");
+	UIColor mainColor = colorsMod->getColor();
+	int placed = 0;
+	for (CrystalPlacement& placement : placeList) {
 		Vec2<float> pos;
-		if (ImGuiUtils::worldToScreen(placement.placePos.toFloat().add(0.f, 0.75f, 0.f), pos)) {
-			float size = 1.f;
-			std::string name = std::to_string((int)placement.targetDamage);
+		if (ImGuiUtils::worldToScreen(placement.placePos.toFloat().add(0.f, 0.5f, 0.f), pos)) {
+			float dist = placement.placePos.toFloat().dist(mc.getLocalPlayer()->stateVectorComponent->pos);
+
+			float size = fmax(0.65f, 3.f / dist);
+			if (size > 2.f) size = 2.f;
+			std::string name = std::to_string(dam);
+			name = Utils::sanitize(name);
 			float textSize = 2.5f * size;
 			float textWidth = ImGuiUtils::getTextWidth(name, textSize);
 			float textHeight = ImGuiUtils::getTextHeight(textSize);
 			Vec2<float> textPos = Vec2<float>(pos.x - textWidth / 2.f, pos.y - textHeight / 2.f);
-			ImGuiUtils::drawText(textPos, name, UIColor(255, 255, 255, 255), textSize, true);
+
+			if (Damagerender) {
+				ImGuiUtils::drawText(textPos, name, UIColor(255, 255, 255, 255), textSize, true);
+			}
 		}
-		placed++;
-		if (placed >= placeAmount) break;
+		// Break loop after rendering the current placement
+		break;
 	}
 }
