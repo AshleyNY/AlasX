@@ -14,10 +14,10 @@ public:
 protected:
 
     float computeExplosionDamage(const Vec3<float>& crystalPos, Actor* target) {
-        constexpr float explosionRadius = 12.f; // 爆炸半径
+        constexpr float explosionRadius = 12.f;
         const float distPercent = computeDistancePercentage(crystalPos, target, explosionRadius);
         if (distPercent > 1.0f) {
-            return 0.0f; // 超出爆炸范围
+            return 0.0f; 
         }
 
         const float impact = computeImpact(crystalPos, target, distPercent);
@@ -26,27 +26,23 @@ protected:
         const auto [armorPoints, epf] = getArmorDetails(target);
         damage = applyArmorReduction(damage, armorPoints, epf);
 
-        return std::max(0.0f, damage); // 确保伤害大于零
+        return std::max(0.0f, damage); 
     }
 
 private:
-    // 计算目标与水晶的距离百分比
     float computeDistancePercentage(const Vec3<float>& crystalPos, Actor* target, float explosionRadius) {
         const Vec3<float> predictedPos = target->getHumanPos().add(target->stateVectorComponent->velocity);
         return std::clamp(predictedPos.distanceTo(crystalPos) / explosionRadius, 0.0f, 1.0f);
     }
 
-    // 计算目标受到的影响
     float computeImpact(const Vec3<float>& crystalPos, Actor* target, float distPercent) {
         return (1.0f - distPercent) * mc.getLocalPlayer()->dimension->blockSource->getSeenPercent(crystalPos, *target->getAABB());
     }
 
-    // 计算基础伤害
     float calculateBaseDamage(float impact, float explosionRadius) {
         return ((impact * impact * 3.5f + impact * 0.5f * 7.0f) * explosionRadius + 1.0f);
     }
 
-    // 获取目标的护甲细节
     std::pair<int, float> getArmorDetails(Actor* target) {
         int armorPoints = 0;
         float epf = 0.0f;
@@ -62,7 +58,6 @@ private:
         return { armorPoints, epf };
     }
 
-    // 应用护甲减伤
     float applyArmorReduction(float damage, int armorPoints, float epf) {
         constexpr float armorReductionFactor = 0.035f;
         constexpr float maxEpf = 25.0f;
@@ -78,7 +73,6 @@ private:
 };
 
 
-// 水晶放置结构体
 class CrystalPlacement : public CrystalStruct {
 public:
     Vec3<int> placePos;
@@ -92,7 +86,7 @@ public:
     }
 };
 
-// 水晶破坏者结构体
+
 class CrystalBreaker : public CrystalStruct {
 public:
     Actor* crystalActor;
@@ -148,10 +142,15 @@ public:
     bool idPredict = false;
     int packets = 1;
     int sendDelay = 1;
-
-
+    //Add new
+    int IexplodeDelay = 0;
+    bool setDead = false;
     bool extrapolation = true;
     float extrapolateAmount = 0.5f;
+    bool antiWeakness = false;
+    int switchType = 3;
+    bool eatstop = false;
+    bool swing = true;
 private:
     int placeDelayTick = 0;
     int breakDelayTick = 0;
@@ -161,13 +160,17 @@ protected:
     static bool sortEntityByDist(Actor* a1, Actor* a2);
     static bool sortCrystalByTargetDame(CrystalStruct a1, CrystalStruct a2);
     bool isHoldingCrystal();
+    int getBest();
     bool isPlaceValid(const Vec3<int>& placePos, Actor* target);
     void generatePlacements(Actor* target);
     void getCrystalActorList(Actor* target);
-    void placeCrystal();
+    int getEndCrystal();
+    void placeCrystal(GameMode* gm);
     void breakCrystal();
+    void explodeEndCrystal(GameMode* gm);
     void cleardalist();
-    void breakIdPredictCrystal();
+
+    void breakIdPredictCrystal(GameMode* gm);
 
 public:
     Actor* currenttarget = nullptr;
